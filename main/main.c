@@ -1,4 +1,4 @@
-
+//---------------- main.c ---------------------------
 #include "freertos/FreeRTOS.h"  // IWYU pragma: keep
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -6,6 +6,11 @@
 #include "esp_lcd_panel_vendor.h" // IWYU pragma: keep.
 #include "esp_lcd_panel_ops.h"
 #include "esp_lvgl_port.h"
+
+//#include <stdio.h>
+#include <string.h>
+
+#include "driver/uart.h"
 
 
 static const char *TAG = "LVGL_APP";
@@ -19,10 +24,101 @@ static const char *TAG = "LVGL_APP";
 #define PIN_NUM_LCD_CS    -1
 #define PIN_NUM_BK_LIGHT  1
 
+// Definición de periféricos y pines
+#define UART_PORT_NUM      UART_NUM_1
+#define UART_TX_PIN        GPIO_NUM_21
+#define UART_RX_PIN        GPIO_NUM_20
+#define UART_BUF_SIZE      1024
+
+// LED integrado en el ESP32-C3 Super Mini (Lógica invertida)
+#define BLINK_GPIO         GPIO_NUM_8
+
 #define LCD_H_RES         240
 #define LCD_V_RES         240
 
 static lv_disp_t *lvgl_disp = NULL;
+static lv_obj_t *lbl_status = NULL; // Variable global para actualizar el texto en pantalla
+
+void init_hardware(void)
+{
+    // 1. Configurar LED de estado
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << BLINK_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+    gpio_set_level(BLINK_GPIO, 1); // Apagado por defecto
+
+    // 2. Parámetros de configuración de la UART
+    uart_config_t uart_config = {
+        .baud_rate = 9600,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT, // En ESP-IDF v6 asigna el reloj óptimo para C3
+    };
+
+    // 3. Aplicar configuración al puerto UART1
+    ESP_ERROR_CHECK(uart_param_config(UART_PORT_NUM, &uart_config));
+
+    // 4. Mapear los pines GPIO a la UART1
+    ESP_ERROR_CHECK(uart_set_pin(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN, 
+                                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+
+    // 5. Instalar el driver de UART asignando buffers RX/TX
+    ESP_ERROR_CHECK(uart_driver_install(UART_PORT_NUM, UART_BUF_SIZE * 2, 0, 0, NULL, 0));
+
+    ESP_LOGI(TAG, "UART1 inicializada correctamente en GPIO20 (RX) y GPIO21 (TX)");
+}
+
+// Tarea para leer datos entrantes desde el puerto RS-232
+static void rx_task(void *arg)
+{
+    uint8_t *data = (uint8_t *) malloc(UART_BUF_SIZE);
+
+    while (1) {
+        // Leer datos del buffer de la UART con timeout de 20ms
+        int rxBytes = uart_read_bytes(UART_PORT_NUM, data, UART_BUF_SIZE - 1, pdMS_TO_TICKS(20));
+
+        if (rxBytes > 0) {
+            data[rxBytes] = '\0'; // Asegurar terminación de cadena
+            ESP_LOGI(TAG, "Recibido vía RS-232 (%d bytes): %s", rxBytes, data);
+
+            // Actualizar la interfaz de LVGL de forma segura
+            if (lbl_status != NULL) {
+                if (lvgl_port_lock(0)) {
+                    // Actualizar el texto del label con el dato recibido
+                    lv_label_set_text_fmt(lbl_status, "Recibido: %s", (char *)data);
+                    lvgl_port_unlock();
+                }
+            }
+
+            // Destello del LED al recibir datos
+            gpio_set_level(BLINK_GPIO, 0); // Enciende LED
+            vTaskDelay(pdMS_TO_TICKS(50));
+            gpio_set_level(BLINK_GPIO, 1); // Apaga LED
+        }
+    }
+    free(data);
+    vTaskDelete(NULL);
+}
+
+// Tarea de prueba para enviar un mensaje cada 5 segundos
+static void tx_task(void *arg)
+{
+    const char *test_msg = "Hola desde ESP32-C3 Super Mini (ESP-IDF v6)\r\n";
+    
+    while (1) {
+        uart_write_bytes(UART_PORT_NUM, test_msg, strlen(test_msg));
+        ESP_LOGI(TAG, "Mensaje enviado a puerto RS-232");
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
 
 void create_ui(void)
 {
@@ -37,28 +133,19 @@ void create_ui(void)
         lv_obj_t *lbl_title = lv_label_create(scr);
         lv_label_set_text(lbl_title, "DATALOGGER");
         lv_obj_set_style_text_color(lbl_title, lv_palette_main(LV_PALETTE_YELLOW), 0);
-        lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_20, 0);
-        lv_obj_align(lbl_title, LV_ALIGN_TOP_MID, 0, 20);
+        lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_30, 0);
+        lv_obj_align(lbl_title, LV_ALIGN_TOP_MID, 0, 0);
 
-        // 2. SUBTÍTULO
-        lv_obj_t *lbl_sub = lv_label_create(scr);
-        lv_label_set_text(lbl_sub, "ESP32-C3 + LVGL");
-        lv_obj_set_style_text_color(lbl_sub, lv_palette_main(LV_PALETTE_GREEN), 0);
-        lv_obj_align(lbl_sub, LV_ALIGN_CENTER, 0, -20);
-
-        // 3. BARRA DE PROGRESO DE EJEMPLO
-        lv_obj_t *bar = lv_bar_create(scr);
-        lv_obj_set_size(bar, 180, 15);
-        lv_obj_align(bar, LV_ALIGN_CENTER, 0, 30);
-        lv_bar_set_value(bar, 75, LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(bar, lv_palette_main(LV_PALETTE_GREY), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(bar, lv_palette_main(LV_PALETTE_BLUE), LV_PART_INDICATOR);
-
-        // 4. ETIQUETA DE ESTADO
-        lv_obj_t *lbl_status = lv_label_create(scr);
-        lv_label_set_text(lbl_status, "Estado: Sistema OK");
-        lv_obj_set_style_text_color(lbl_status, lv_color_white(), 0);
-        lv_obj_align(lbl_status, LV_ALIGN_BOTTOM_MID, 0, -20);
+       
+        // 3. ETIQUETA DE DATOS UART (Variable global)
+        lbl_status = lv_label_create(scr);
+        lv_label_set_text(lbl_status, "Esperando datos...");
+        lv_obj_set_style_text_color(lbl_status, lv_palette_main(LV_PALETTE_CYAN), 0);
+        lv_obj_set_style_text_font(lbl_status, &lv_font_montserrat_28, 0);
+        lv_obj_set_width(lbl_status, 230); // Ajustar ancho para permitir ajuste de línea
+        lv_label_set_long_mode(lbl_status, LV_LABEL_LONG_WRAP); // Salto de línea automático
+        lv_obj_set_style_text_align(lbl_status, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(lbl_status, LV_ALIGN_BOTTOM_MID, 0, 0);
 
         // Liberar el bloqueo de LVGL
         lvgl_port_unlock();
@@ -121,7 +208,7 @@ void app_main(void)
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io_handle,
         .panel_handle = panel_handle,
-        .buffer_size = LCD_H_RES * 40, // Buffer en RAM
+        .buffer_size = LCD_H_RES * 20, // Buffer en RAM
         .double_buffer = true,
         .hres = LCD_H_RES,
         .vres = LCD_V_RES,
@@ -141,6 +228,12 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Creando Interfaz de Usuario...");
     create_ui();
+
+    init_hardware();
+
+    // Crear tareas concurrentes en FreeRTOS
+    xTaskCreate(rx_task, "uart_rx_task", 3072, NULL, 5, NULL);
+    xTaskCreate(tx_task, "uart_tx_task", 3072, NULL, 5, NULL);
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));

@@ -1,3 +1,6 @@
 idf_component_register(SRCS "main.c"
                        INCLUDE_DIRS "."
-                       REQUIRES esp_lcd driver)
+                       REQUIRES esp_lcd driver
+                       esp_driver_uart
+                       esp_driver_gpio
+                       )
