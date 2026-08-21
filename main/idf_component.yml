@@ -1,3 +1,4 @@
+#---------------- idf_comonponent.yml ---------------------
 dependencies:
-  lvgl/lvgl: "^8.3.11"
-  espressif/esp_lvgl_port: "^1.4.0"
+  lvgl/lvgl: "8.3.11"
+  espressif/esp_lvgl_port: "^2.3.0"
