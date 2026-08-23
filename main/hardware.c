@@ -1,24 +1,31 @@
-#include <stddef.h>
+//------------------------------ hardware.c --------------------------------
+
 #include "hardware.h"
+#include "driver/gpio.h"  // IWYU pragma: keep
+#include "driver/uart.h"
+#include "esp_littlefs.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
+#include "freertos/FreeRTOS.h" // IWYU pragma: keep
 #include "freertos/task.h"
+#include <stddef.h>
 
 static const char *TAG = "HARDWARE";
 
-lv_disp_t *lvgl_disp = NULL;
+// static lv_obj_t *lbl_status = NULL;
 
-void hardware_init_gpio(void)
-{
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << BLINK_GPIO),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io_conf);
-    gpio_set_level(BLINK_GPIO, 1);
+// lv_disp_t *lvgl_disp = NULL;
+
+/*
+void hardware_init_gpio(void) {
+  gpio_config_t io_conf = {
+      .pin_bit_mask = (1ULL << BLINK_GPIO),
+      .mode = GPIO_MODE_OUTPUT,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  gpio_config(&io_conf);
+  gpio_set_level(BLINK_GPIO, 1);
 
     gpio_config_t bk_gpio_config = {
         .mode = GPIO_MODE_OUTPUT,
@@ -29,98 +36,151 @@ void hardware_init_gpio(void)
     };
     gpio_config(&bk_gpio_config);
     gpio_set_level(PIN_NUM_BK_LIGHT, 1);
+
 }
+    */
 
-void hardware_init_uart(void)
-{
-    uart_config_t uart_config = {
-        .baud_rate = BAUD_RATE,
-        .data_bits = UART_DATA_8_BITS,
-        .parity    = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT,
-    };
+void hardware_init_uart(void) {
+  uart_config_t uart_config = {
+      .baud_rate = BAUD_RATE,
+      .data_bits = UART_DATA_8_BITS,
+      .parity = UART_PARITY_DISABLE,
+      .stop_bits = UART_STOP_BITS_1,
+      .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+      .source_clk = UART_SCLK_DEFAULT,
+  };
 
-    ESP_ERROR_CHECK(uart_param_config(UART_PORT_NUM, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN, 
-                                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-    ESP_ERROR_CHECK(uart_driver_install(UART_PORT_NUM, UART_BUF_SIZE * 2, 0, 0, NULL, 0));
+  ESP_ERROR_CHECK(uart_param_config(UART_PORT_NUM, &uart_config));
+  ESP_ERROR_CHECK(uart_set_pin(UART_PORT_NUM, UART_TX_PIN, UART_RX_PIN,
+                               UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+  ESP_ERROR_CHECK(
+      uart_driver_install(UART_PORT_NUM, UART_BUF_SIZE * 2, 0, 0, NULL, 0));
 
-    ESP_LOGI(TAG, "UART1 inicializada en GPIO20 (RX) y GPIO21 (TX)");
+  ESP_LOGI(TAG, "UART1 inicializada en GPIO20 (RX) y GPIO21 (TX)");
 }
+/*
+lv_disp_t *hardware_init_display(void) {
+  ESP_LOGI(TAG, "Iniciando Bus SPI...");
+  spi_bus_config_t buscfg = {
+      .sclk_io_num = PIN_NUM_SCLK,
+      .mosi_io_num = PIN_NUM_MOSI,
+      .miso_io_num = -1,
+      .quadwp_io_num = -1,
+      .quadhd_io_num = -1,
+      .max_transfer_sz = LCD_H_RES * LCD_V_RES * sizeof(uint16_t),
+  };
+  ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
-lv_disp_t* hardware_init_display(void)
-{
-    ESP_LOGI(TAG, "Iniciando Bus SPI...");
-    spi_bus_config_t buscfg = {
-        .sclk_io_num = PIN_NUM_SCLK,
-        .mosi_io_num = PIN_NUM_MOSI,
-        .miso_io_num = -1,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = LCD_H_RES * LCD_V_RES * sizeof(uint16_t),
-    };
-    ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
+  ESP_LOGI(TAG, "Configurando Panel ST7789...");
+  esp_lcd_panel_io_handle_t io_handle = NULL;
+  esp_lcd_panel_io_spi_config_t io_config = {
+      .dc_gpio_num = PIN_NUM_LCD_DC,
+      .cs_gpio_num = PIN_NUM_LCD_CS,
+      .pclk_hz = 20 * 1000 * 1000,
+      .lcd_cmd_bits = 8,
+      .lcd_param_bits = 8,
+      .spi_mode = 3,
+      .trans_queue_depth = 10,
+  };
+  ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((spi_host_device_t)LCD_HOST,
+                                           &io_config, &io_handle));
 
-    ESP_LOGI(TAG, "Configurando Panel ST7789...");
-    esp_lcd_panel_io_handle_t io_handle = NULL;
-    esp_lcd_panel_io_spi_config_t io_config = {
-        .dc_gpio_num = PIN_NUM_LCD_DC,
-        .cs_gpio_num = PIN_NUM_LCD_CS,
-        .pclk_hz = 20 * 1000 * 1000,
-        .lcd_cmd_bits = 8,
-        .lcd_param_bits = 8,
-        .spi_mode = 3,
-        .trans_queue_depth = 10,
-    };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((spi_host_device_t)LCD_HOST, &io_config, &io_handle));
+  esp_lcd_panel_handle_t panel_handle = NULL;
+  esp_lcd_panel_dev_config_t panel_config = {
+      .reset_gpio_num = PIN_NUM_LCD_RST,
+      .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
+      .bits_per_pixel = 16,
+  };
 
-    esp_lcd_panel_handle_t panel_handle = NULL;
-    esp_lcd_panel_dev_config_t panel_config = {
-        .reset_gpio_num = PIN_NUM_LCD_RST,
-        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
-        .bits_per_pixel = 16,
-    };
-    
-    // Uso del driver dedicado para ST7789 en ESP-IDF v6
-    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_config, &panel_handle));
+  // Uso del driver dedicado para ST7789 en ESP-IDF v6
+  ESP_ERROR_CHECK(
+      esp_lcd_new_panel_st7789(io_handle, &panel_config, &panel_handle));
 
-    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
-    ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
-    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 0));
-    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
+  ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+  ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+  ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 0));
+  ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
+  ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
-    ESP_LOGI(TAG, "Inicializando LVGL Port...");
-    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
+  ESP_LOGI(TAG, "Inicializando LVGL Port...");
+  const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+  ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
-    const lvgl_port_display_cfg_t disp_cfg = {
-        .io_handle = io_handle,
-        .panel_handle = panel_handle,
-        .buffer_size = LCD_H_RES * 20,
-        .double_buffer = true,
-        .hres = LCD_H_RES,
-        .vres = LCD_V_RES,
-        .monochrome = false,
-        .rotation = {
-            .swap_xy = false,
-            .mirror_x = false,
-            .mirror_y = false,
-        },
-        .flags = {
-            .buff_dma = true,
-        }
-    };
-    
-    lvgl_disp = lvgl_port_add_disp(&disp_cfg);
-    return lvgl_disp;
+  const lvgl_port_display_cfg_t disp_cfg = {.io_handle = io_handle,
+                                            .panel_handle = panel_handle,
+                                            .buffer_size = LCD_H_RES * 20,
+                                            .double_buffer = true,
+                                            .hres = LCD_H_RES,
+                                            .vres = LCD_V_RES,
+                                            .monochrome = false,
+                                            .rotation =
+                                                {
+                                                    .swap_xy = false,
+                                                    .mirror_x = false,
+                                                    .mirror_y = false,
+                                                },
+                                            .flags = {
+                                                .buff_dma = true,
+                                            }};
+
+  lvgl_disp = lvgl_port_add_disp(&disp_cfg);
+  return lvgl_disp;
 }
+*/
+// Configurar y montar LittleFS
+static esp_err_t init_littlefs(void) {
+  ESP_LOGI(TAG, "Inicializando LittleFS");
 
-void hardware_init_all(void)
-{
-    hardware_init_gpio();
-    hardware_init_uart();
-    hardware_init_display();
+  esp_vfs_littlefs_conf_t conf = {.base_path = "/archivos",
+                                  .partition_label = "archivos",
+                                  .format_if_mount_failed = true,
+                                  .dont_mount = false};
+
+  esp_err_t ret = esp_vfs_littlefs_register(&conf);
+
+  if (ret != ESP_OK) {
+    if (ret == ESP_FAIL) {
+      ESP_LOGE(TAG, "Fallo al montar o formatear LittleFS");
+    } else {
+      ESP_LOGE(TAG, "Error al inicializar LittleFS (%s)", esp_err_to_name(ret));
+    }
+    return ret;
+  }
+
+  size_t total = 0, used = 0;
+  ret = esp_littlefs_info(conf.partition_label, &total, &used);
+  if (ret == ESP_OK) {
+    ESP_LOGI(TAG, "LittleFS Montado. Total: %d, Usado: %d", total, used);
+  }
+  return ESP_OK;
+}
+/*
+void create_ui(void) {
+  if (lvgl_port_lock(portMAX_DELAY)) {
+    lv_obj_t *scr = lv_disp_get_scr_act(lvgl_disp);
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+
+    lv_obj_t *lbl_title = lv_label_create(scr);
+    lv_label_set_text(lbl_title, "DATALOGGER");
+    lv_obj_set_style_text_color(lbl_title, lv_palette_main(LV_PALETTE_YELLOW),
+0); lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_20, 0);
+    lv_obj_align(lbl_title, LV_ALIGN_TOP_MID, 0, 15);
+
+    lbl_status = lv_label_create(scr);
+    lv_label_set_text(lbl_status, "Esperando datos RS-232...");
+    lv_obj_set_style_text_color(lbl_status, lv_palette_main(LV_PALETTE_CYAN),
+0); lv_obj_set_width(lbl_status, 220); lv_label_set_long_mode(lbl_status,
+LV_LABEL_LONG_WRAP); lv_obj_set_style_text_align(lbl_status,
+LV_TEXT_ALIGN_CENTER, 0); lv_obj_align(lbl_status, LV_ALIGN_CENTER, 0, 10);
+
+    lvgl_port_unlock();
+  }
+}
+  */
+
+void hardware_init_all(void) {
+  ESP_ERROR_CHECK(init_littlefs());
+ // hardware_init_gpio();
+  hardware_init_uart();
+  // hardware_init_display();
 }

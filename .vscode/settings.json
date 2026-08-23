@@ -31,7 +31,8 @@
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=c:\\DATALOGGER\\C3-DATALOGER\\build"
+    "--compile-commands-dir=c:\\DATALOGGER\\C3-DATALOGER\\build",
+    "--fallback-style={ BasedOnStyle: LLVM, ColumnLimit: 150 }"
   ],
   "idf.flashType": "UART"
 }
