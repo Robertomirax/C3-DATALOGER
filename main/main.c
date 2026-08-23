@@ -129,31 +129,7 @@ static void rx_task(void *arg) {
           }
         }
       }
-      /*
-            // Formatear HEX y Logs
-            int pos = 0;
-            for (int i = 0; i < rxBytes; i++) {
-              pos += snprintf(&hex_str[pos], ((UART_BUF_SIZE * 3) + 1) - pos,
-         "%02X ", data[i]);
-            }
-
-            ESP_LOGW(TAG, "RS-232 (%d bytes) [HEX]: %s", rxBytes, hex_str);
-
-                        // Actualizar interfaz LVGL
-                        if (lbl_status != NULL) {
-                            if (lvgl_port_lock(pdMS_TO_TICKS(100))) {
-                                lv_label_set_text_fmt(lbl_status, "RX:\n%s",
-         data); lvgl_port_unlock();
-                            }
-                        }
-
-                        // Indicador LED
-                        gpio_set_level(BLINK_GPIO, 0);
-                        vTaskDelay(pdMS_TO_TICKS(10));
-                        gpio_set_level(BLINK_GPIO, 1);
-
-            */
-
+     
     } else {
       vTaskDelay(pdMS_TO_TICKS(10));
     }
