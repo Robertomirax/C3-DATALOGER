@@ -40,7 +40,8 @@ static void tx_file_task(void *arg) {
   size_t total_sent = 0;
 
   while ((bytes_read = fread(tx_buffer, 1, UART_BUF_SIZE, f)) > 0) {
-    int bytes_sent = uart_write_bytes(UART_PORT_NUM, (const char *)tx_buffer, bytes_read);
+    int bytes_sent =
+        uart_write_bytes(UART_PORT_NUM, (const char *)tx_buffer, bytes_read);
     if (bytes_sent > 0) {
       total_sent += bytes_sent;
     }
@@ -68,24 +69,38 @@ static void rx_task(void *arg) {
   bool esperando_confirmacion = false;
 
   while (1) {
-    int rxBytes = uart_read_bytes(UART_PORT_NUM, data, UART_BUF_SIZE, pdMS_TO_TICKS(100));
+    int rxBytes =
+        uart_read_bytes(UART_PORT_NUM, data, UART_BUF_SIZE, pdMS_TO_TICKS(100));
 
     if (rxBytes > 0) {
       data[rxBytes] = '\0'; // Null-terminate seguro
+
+      // Imprime solo los bytes exactos recibidos por la terminal de depuración
+      // (IDF Log)
+      ESP_LOGI(TAG, "Recibido (%d bytes): %.*s", rxBytes, rxBytes,
+               (char *)data);
+
+      // Imprime una tabla estructurada en Hexadecimal y ASCII
+      ESP_LOG_BUFFER_HEXDUMP(TAG, data, rxBytes, ESP_LOG_INFO);
 
       // --- ESTADO DE ESPERA DE CONFIRMACIÓN ---
       if (esperando_confirmacion) {
         // Evaluar el primer carácter recibido ignorando espacios
         char resp = data[0];
         if (resp == 'y' || resp == 'Y') {
+
+          const char *msg1 = "Self Diag ...Waiting\r\n";
+            uart_write_bytes(UART_PORT_NUM, msg1, strlen(msg1));
+            
+
           FILE *f = fopen(log_path, "w");
           if (f != NULL) {
             fclose(f);
             ESP_LOGI(TAG, "Archivo borrado exitosamente.");
-            const char *msg = "\r\n[OK] Archivo borrado exitosamente.\r\n";
+            const char *msg = "RAM test successful\r\n\r\nDone\r\n";
             uart_write_bytes(UART_PORT_NUM, msg, strlen(msg));
           } else {
-            ESP_LOGE(TAG, "Error al intentar borrar el archivo.");
+            ESP_LOGE(TAG, "RAM test failed \r\n\r\nDone\r\n");
             const char *msg = "\r\n[ERROR] Fallo al borrar el archivo.\r\n";
             uart_write_bytes(UART_PORT_NUM, msg, strlen(msg));
           }
@@ -100,8 +115,27 @@ static void rx_task(void *arg) {
       // --- FLUJO NORMAL DE COMANDOS / DATOS ---
       else {
         // 1. COMANDO "enviar"
-        if (strstr((char *)data, "enviar") != NULL) {
-          ESP_LOGI(TAG, "Comando 'enviar' recibido!");
+        if (strstr((char *)data, "send") != NULL) {
+          ESP_LOGI(TAG, "Comando 'send' recibido!");
+
+          const char *cambio = "ChangeBaud->4800 in 10Sec\r\n";
+          uart_write_bytes(UART_PORT_NUM, cambio, strlen(cambio));
+          // Esperar a que el mensaje termine de transmitirse antes de pausar
+          uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(500));
+
+          // --- RETARDO DE 10 SEGUNDOS ---
+          ESP_LOGI(TAG, "Iniciando espera de 10 segundos...");
+          vTaskDelay(pdMS_TO_TICKS(10000));
+
+          // Cambiar la velocidad de la UART a 4800 baudios
+          esp_err_t err = uart_set_baudrate(UART_PORT_NUM, 4800);
+          if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Baudrate cambiado exitosamente a 4800");
+          } else {
+            ESP_LOGE(TAG, "Error al cambiar el baudrate: %s",
+                     esp_err_to_name(err));
+          }
+
           if (xTaskGetHandle("tx_file_task") == NULL) {
             xTaskCreate(tx_file_task, "tx_file_task", 4096, NULL, 5, NULL);
           } else {
@@ -109,11 +143,12 @@ static void rx_task(void *arg) {
           }
         }
         // 2. COMANDO "borrar"
-        else if (strstr((char *)data, "borrar") != NULL) {
-          ESP_LOGW(TAG, "Solicitud de borrado recibida. Pidiendo confirmacion...");
+        else if (strstr((char *)data, "mtest") != NULL) {
+          ESP_LOGW(TAG,
+                   "Solicitud de borrado recibida. Pidiendo confirmacion...");
           esperando_confirmacion = true;
 
-          const char *prompt = "\r\n?Esta seguro que desea borrar el archivo? (y/n): ";
+          const char *prompt = "Will clear data\r\nAre you sure? y/n  \r\n";
           uart_write_bytes(UART_PORT_NUM, prompt, strlen(prompt));
         }
         // 3. GUARDAR REGISTRO REGULAR

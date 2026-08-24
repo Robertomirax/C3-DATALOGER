@@ -12,7 +12,7 @@ extern "C" {
 #define UART_TX_PIN GPIO_NUM_21
 #define UART_RX_PIN GPIO_NUM_20
 #define UART_BUF_SIZE 1024
-#define BAUD_RATE 4800
+#define BAUD_RATE 300
 
 // --- OTROS PINES ---
 // #define BLINK_GPIO        GPIO_NUM_8
