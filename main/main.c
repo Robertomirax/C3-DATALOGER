@@ -29,6 +29,7 @@ typedef enum {
 
 static subestado_loop_t subestado_loop = WAIT_CRLF_1;
 static uint8_t last_byte = 0x00;
+static int linea = 0x00;
 
 // ---------------------------------------------------------------------------
 // Manejo del Buffer de Registro en RAM
@@ -146,6 +147,23 @@ static void procesar_loop_secuencia(uint8_t *buf, size_t len, FILE *f) {
       }
 
       subestado_loop = WAIT_CRLF_1;
+
+      // incrementar el contador de línea y ver si es múltiplo de 256 para
+      // agregar la línea indicativa
+      linea++;
+      if (linea % 4 == 0) {
+        // agregar una línea indicativa
+        char buffer[32];
+
+        // %05d aplica relleno con ceros hasta completar 5 dígitos
+        snprintf(buffer, sizeof(buffer), "\r\nSeq#..%05d", linea);
+
+        // Escribir el resultado en el archivo
+        fwrite(buffer, sizeof(char), strlen(buffer), f);
+        fflush(f);
+        ESP_LOGI(TAG, "Se agregó la línea: %s", buffer);
+      }
+
       break;
     }
 
