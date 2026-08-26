@@ -10,12 +10,218 @@
 #include <string.h>
 
 static const char *TAG = "MAIN_APP";
+static const char *TAG_KB = "TECLADO";
+static const char *log_path = "/archivos/log_uart.txt";
 
-// Header inicial
-static const char DL_HEADER[] = "\r\n\r\nAlert Technologies\r\nDATALOGGER "
-                                "VER1.04\r\n\r\nMemory Used...08%\r\n";
+static const char DL_HEADER2[] = "\r\n\r\nAlert Technologies\r\nDATALOGGER "
+                                 "VER1.04\r\n\nMemory Used...08%\r\n";
 
-// Tarea para enviar el archivo por UART
+extern bool esperando_confirmacion;
+
+typedef enum {
+  WAIT_CRLF_1,
+  WAIT_COMMA_1,
+  TRIM_ZEROS_2,
+  CAPTURE_TO_COMMA_2,
+  IGNORE_TO_COMMA_3,
+  TRIM_ZEROS_4,
+  CAPTURE_TO_COMMA_4,
+  WAIT_TARE
+} subestado_loop_t;
+
+static subestado_loop_t subestado_loop = WAIT_CRLF_1;
+static uint8_t last_byte = 0x00;
+
+// ---------------------------------------------------------------------------
+// Manejo del Buffer de Registro en RAM
+// ---------------------------------------------------------------------------
+static char line_buf[128];
+static size_t line_idx = 0;
+static size_t pos_flag_tara =
+    0; // Índice en line_buf donde reside el flag de tara ('0' inicial)
+
+static void reset_line_buffer(void) {
+  line_idx = 0;
+  pos_flag_tara = 0;
+}
+
+static void append_char_to_line(char c) {
+  if (line_idx < sizeof(line_buf) - 1) {
+    line_buf[line_idx++] = c;
+    line_buf[line_idx] = '\0';
+  }
+}
+
+static void append_str_to_line(const char *str) {
+  while (*str && (line_idx < sizeof(line_buf) - 1)) {
+    line_buf[line_idx++] = *str++;
+  }
+  line_buf[line_idx] = '\0';
+}
+
+// ---------------------------------------------------------------------------
+// Procesador byte a byte
+// ---------------------------------------------------------------------------
+static void procesar_loop_secuencia(uint8_t *buf, size_t len, FILE *f) {
+  for (size_t i = 0; i < len; i++) {
+    uint8_t b = buf[i];
+
+    switch (subestado_loop) {
+
+    // 1. Espera el primer 0x0D 0x0A
+    case WAIT_CRLF_1:
+      if (last_byte == 0x0D && b == 0x0A) {
+        ESP_LOGI(TAG,
+                 "Primer CRLF detectado. Inicializando registro en RAM...");
+        reset_line_buffer();
+
+        append_str_to_line("\r\n");
+        pos_flag_tara = line_idx; // Almacenamos dónde se ubica el '0' inicial
+        append_str_to_line("0 ");
+
+        subestado_loop = WAIT_COMMA_1;
+      }
+      break;
+
+    // 2. Espera la 1ª coma ','
+    case WAIT_COMMA_1:
+      if (b == ',') {
+        ESP_LOGI(TAG, "1ª coma detectada. Omitiendo ceros iniciales...");
+        subestado_loop = TRIM_ZEROS_2;
+      }
+      break;
+
+    // 2.1 Descarta '0' y espacios iniciales de la 1ª captura
+    case TRIM_ZEROS_2:
+      if (b == ',') {
+        ESP_LOGI(TAG, "2ª coma detectada. Agregando espacio...");
+        append_char_to_line(' ');
+        subestado_loop = IGNORE_TO_COMMA_3;
+      } else if (b != '0' && b != ' ') {
+        append_char_to_line((char)b);
+        subestado_loop = CAPTURE_TO_COMMA_2;
+      }
+      break;
+
+    // 3. Graba todo hasta encontrar la 2ª coma ','
+    case CAPTURE_TO_COMMA_2:
+      if (b == ',') {
+        ESP_LOGI(TAG, "2ª coma detectada. Agregando espacio...");
+        append_char_to_line(' ');
+        subestado_loop = IGNORE_TO_COMMA_3;
+      } else {
+        append_char_to_line((char)b);
+      }
+      break;
+
+    // 4. Obvia todo lo recibido entre la 2ª y la 3ª coma
+    case IGNORE_TO_COMMA_3:
+      if (b == ',') {
+        ESP_LOGI(
+            TAG,
+            "3ª coma detectada. Omitiendo ceros iniciales de 2ª captura...");
+        subestado_loop = TRIM_ZEROS_4;
+      }
+      break;
+
+    // 4.1 Descarta '0' y espacios iniciales de la 2ª captura
+    case TRIM_ZEROS_4:
+      if (b == ',') {
+        ESP_LOGI(TAG, "4ª coma detectada.");
+        subestado_loop = WAIT_TARE;
+      } else if (b != '0' && b != ' ') {
+        append_char_to_line((char)b);
+        subestado_loop = CAPTURE_TO_COMMA_4;
+      }
+      break;
+
+    // 5. Graba todo hasta encontrar la 4ª coma ','
+    case CAPTURE_TO_COMMA_4:
+      if (b == ',') {
+        ESP_LOGI(TAG, "4ª coma detectada. Pasando a evaluación de TARA...");
+        subestado_loop = WAIT_TARE;
+      } else {
+        append_char_to_line((char)b);
+      }
+      break;
+
+    // 5.1 Evalúa el byte de Tara, actualiza RAM y escribe en Flash
+    case WAIT_TARE:
+      ESP_LOGW(TAG, "Tara recibida = 0x%02X", b);
+      if (b != '0' && b != '1')
+      {
+        break;
+      }      
+
+      if (b == '1' || b == 0x31) {
+        // Modificación limpia directamente en el buffer de RAM
+        if (pos_flag_tara < line_idx) {
+          line_buf[pos_flag_tara] = '1';
+        }
+        ESP_LOGW(TAG, "Flag de Tara actualizado a '1' en RAM");
+      }
+
+      // Escritura atómica a disco de la línea final
+      if (line_idx > 0) {
+        fwrite(line_buf, 1, line_idx, f);
+        fflush(f);
+        ESP_LOGI(TAG, "Línea guardada exitosamente en Flash: %s", line_buf);
+      }
+
+      // Reinicia máquina de estados para la siguiente trama
+      subestado_loop = WAIT_CRLF_1;
+      break;
+    }
+
+    last_byte = b;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tareas independientes
+// ---------------------------------------------------------------------------
+void console_keyboard_task(void *arg) {
+  ESP_LOGI(TAG_KB, "Monitoreo de teclado iniciado. Presiona 'B' para borrar.");
+
+  while (1) {
+    int c = getchar();
+
+    if (c != EOF) {
+      if (c == 'b' || c == 'B') {
+        printf("\r\n[ALERTA] Solicitud de borrado detectada.\r\n");
+        printf("Will clear data\r\nAre you sure? y/n \r\n");
+        fflush(stdout);
+
+        bool esperando = true;
+        while (esperando) {
+          int resp = getchar();
+          if (resp != EOF && resp != '\r' && resp != '\n') {
+            if (resp == 'y' || resp == 'Y') {
+              printf("\r\nSelf Diag ...Waiting\r\n");
+
+              FILE *f = fopen(log_path, "w");
+              if (f != NULL) {
+                fclose(f);
+                ESP_LOGI(TAG_KB, "Archivo borrado exitosamente.");
+                printf("RAM test successful\r\n\r\nDone\r\n");
+              } else {
+                ESP_LOGE(TAG_KB, "RAM test failed.");
+                printf("\r\n[ERROR] Fallo al borrar el archivo.\r\n");
+              }
+            } else {
+              ESP_LOGI(TAG_KB, "Borrado cancelado por el usuario.");
+              printf("\r\n[INFO] Operacion cancelada.\r\n");
+            }
+            esperando = false;
+          }
+          vTaskDelay(pdMS_TO_TICKS(20));
+        }
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+}
+
 static void tx_file_task(void *arg) {
   const char *file_path = "/archivos/log_uart.txt";
 
@@ -55,7 +261,6 @@ static void tx_file_task(void *arg) {
   vTaskDelete(NULL);
 }
 
-// Tarea RX
 static void rx_task(void *arg) {
   uint8_t *data = (uint8_t *)malloc(UART_BUF_SIZE + 1);
 
@@ -65,33 +270,48 @@ static void rx_task(void *arg) {
     return;
   }
 
-  const char *log_path = "/archivos/log_uart.txt";
   bool esperando_confirmacion = false;
+  bool inicio_transmision = true;
+
+  int estado_grabado = 0;
+
+  const char *target =
+      "seq #\",\"ld cella\",\"     dac\",\"    temp\",\"    tare\"";
+  size_t target_len = strlen(target);
+
+  char stream_buf[UART_BUF_SIZE + 32];
+  size_t overlap_len = 0;
 
   while (1) {
     int rxBytes =
         uart_read_bytes(UART_PORT_NUM, data, UART_BUF_SIZE, pdMS_TO_TICKS(100));
 
     if (rxBytes > 0) {
-      data[rxBytes] = '\0'; // Null-terminate seguro
+      data[rxBytes] = '\0';
 
-      // Imprime solo los bytes exactos recibidos por la terminal de depuración
-      // (IDF Log)
       ESP_LOGI(TAG, "Recibido (%d bytes): %.*s", rxBytes, rxBytes,
                (char *)data);
-
-      // Imprime una tabla estructurada en Hexadecimal y ASCII
       ESP_LOG_BUFFER_HEXDUMP(TAG, data, rxBytes, ESP_LOG_INFO);
 
-      // --- ESTADO DE ESPERA DE CONFIRMACIÓN ---
+      memcpy(stream_buf + overlap_len, data, rxBytes);
+      size_t total_stream_len = overlap_len + rxBytes;
+      stream_buf[total_stream_len] = '\0';
+
+      uint16_t valor = (data[0] << 4) | data[1];
+
+      if (valor > 0x0F && inicio_transmision) {
+        ESP_LOGI(TAG, "Valor binario mayor a 0x0F recibido: 0x%02X", valor);
+        uart_write_bytes(UART_PORT_NUM, DL_HEADER2, strlen(DL_HEADER2));
+        inicio_transmision = false;
+        overlap_len = 0;
+        continue;
+      }
+
       if (esperando_confirmacion) {
-        // Evaluar el primer carácter recibido ignorando espacios
         char resp = data[0];
         if (resp == 'y' || resp == 'Y') {
-
           const char *msg1 = "Self Diag ...Waiting\r\n";
-            uart_write_bytes(UART_PORT_NUM, msg1, strlen(msg1));
-            
+          uart_write_bytes(UART_PORT_NUM, msg1, strlen(msg1));
 
           FILE *f = fopen(log_path, "w");
           if (f != NULL) {
@@ -109,63 +329,92 @@ static void rx_task(void *arg) {
           const char *msg = "\r\n[INFO] Operacion cancelada.\r\n";
           uart_write_bytes(UART_PORT_NUM, msg, strlen(msg));
         }
-
         esperando_confirmacion = false;
       }
-      // --- FLUJO NORMAL DE COMANDOS / DATOS ---
-      else {
-        // 1. COMANDO "enviar"
-        if (strstr((char *)data, "send") != NULL) {
-          ESP_LOGI(TAG, "Comando 'send' recibido!");
 
-          const char *cambio = "ChangeBaud->4800 in 10Sec\r\n";
-          uart_write_bytes(UART_PORT_NUM, cambio, strlen(cambio));
-          // Esperar a que el mensaje termine de transmitirse antes de pausar
-          uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(500));
+      else if (strstr(stream_buf, "send") != NULL) {
+        ESP_LOGI(TAG, "Comando 'send' recibido!");
 
-          // --- RETARDO DE 10 SEGUNDOS ---
-          ESP_LOGI(TAG, "Iniciando espera de 10 segundos...");
-          vTaskDelay(pdMS_TO_TICKS(10000));
+        const char *cambio = "ChangeBaud->4800 in 10Sec\r\n";
+        uart_write_bytes(UART_PORT_NUM, cambio, strlen(cambio));
+        uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(500));
 
-          // Cambiar la velocidad de la UART a 4800 baudios
-          esp_err_t err = uart_set_baudrate(UART_PORT_NUM, 4800);
-          if (err == ESP_OK) {
-            ESP_LOGI(TAG, "Baudrate cambiado exitosamente a 4800");
-          } else {
-            ESP_LOGE(TAG, "Error al cambiar el baudrate: %s",
-                     esp_err_to_name(err));
-          }
+        ESP_LOGI(TAG, "Iniciando espera de 10 segundos...");
+        vTaskDelay(pdMS_TO_TICKS(10000));
 
-          if (xTaskGetHandle("tx_file_task") == NULL) {
-            xTaskCreate(tx_file_task, "tx_file_task", 4096, NULL, 5, NULL);
-          } else {
-            ESP_LOGW(TAG, "Transferencia previa aun en progreso.");
-          }
+        esp_err_t err = uart_set_baudrate(UART_PORT_NUM, 4800);
+        if (err == ESP_OK) {
+          ESP_LOGI(TAG, "Baudrate cambiado exitosamente a 4800");
+        } else {
+          ESP_LOGE(TAG, "Error al cambiar el baudrate: %s",
+                   esp_err_to_name(err));
         }
-        // 2. COMANDO "borrar"
-        else if (strstr((char *)data, "mtest") != NULL) {
-          ESP_LOGW(TAG,
-                   "Solicitud de borrado recibida. Pidiendo confirmacion...");
-          esperando_confirmacion = true;
 
-          const char *prompt = "Will clear data\r\nAre you sure? y/n  \r\n";
-          uart_write_bytes(UART_PORT_NUM, prompt, strlen(prompt));
-        }
-        // 3. GUARDAR REGISTRO REGULAR
-        else {
-          FILE *f = fopen(log_path, "a");
-          if (f == NULL) {
-            ESP_LOGE(TAG, "Error al abrir el archivo log_uart.txt");
-          } else {
-            size_t written = fwrite(data, 1, rxBytes, f);
-            fclose(f);
-            ESP_LOGI(TAG, "Guardados %zu bytes en el archivo", written);
-          }
+        if (xTaskGetHandle("tx_file_task") == NULL) {
+          xTaskCreate(tx_file_task, "tx_file_task", 4096, NULL, 5, NULL);
+        } else {
+          ESP_LOGW(TAG, "Transferencia previa aun en progreso.");
         }
       }
 
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(10));
+      else if (strstr(stream_buf, "mtest") != NULL) {
+        ESP_LOGW(TAG,
+                 "Solicitud de borrado recibida. Pidiendo confirmacion...");
+        esperando_confirmacion = true;
+
+        const char *prompt = "Will clear data\r\nAre you sure? y/n  \r\n";
+        uart_write_bytes(UART_PORT_NUM, prompt, strlen(prompt));
+      }
+
+      else {
+        // Apertura estándar con "a+" (append puro sin seek relativo)
+        FILE *f = fopen(log_path, "a+");
+
+        if (f == NULL) {
+          ESP_LOGE(TAG, "Error al abrir el archivo log_uart.txt");
+        } else {
+          if (estado_grabado == 0) {
+            char *match = (char *)memmem(stream_buf, total_stream_len, target,
+                                         target_len);
+
+            if (match != NULL) {
+              ESP_LOGI(TAG, "Frase objetivo detectada. Entrando al bucle...");
+
+              size_t stream_match_idx = match - stream_buf;
+              size_t data_match_end_idx =
+                  (stream_match_idx >= overlap_len)
+                      ? (stream_match_idx - overlap_len + target_len)
+                      : (target_len - (overlap_len - stream_match_idx));
+
+              fwrite(data, 1, data_match_end_idx, f);
+
+              estado_grabado = 2;
+              subestado_loop = WAIT_CRLF_1;
+              last_byte = 0x00;
+
+              size_t bytes_restantes = rxBytes - data_match_end_idx;
+              if (bytes_restantes > 0) {
+                procesar_loop_secuencia(data + data_match_end_idx,
+                                        bytes_restantes, f);
+              }
+            } else {
+              fwrite(data, 1, rxBytes, f);
+            }
+          } else if (estado_grabado == 2) {
+            procesar_loop_secuencia(data, rxBytes, f);
+          }
+
+          fclose(f);
+        }
+      }
+
+      if (total_stream_len >= (target_len - 1)) {
+        overlap_len = target_len - 1;
+        memcpy(stream_buf, stream_buf + total_stream_len - overlap_len,
+               overlap_len);
+      } else {
+        overlap_len = total_stream_len;
+      }
     }
   }
 
@@ -177,11 +426,14 @@ void app_main(void) {
   ESP_LOGI(TAG, "Inicializando Hardware...");
   hardware_init_all();
 
-  // Lanza tarea de lectura UART
-  xTaskCreate(rx_task, "uart_rx_task", 8192, NULL, 5, NULL);
+  vTaskDelay(pdMS_TO_TICKS(100));
 
-  // Envía encabezado
-  uart_write_bytes(UART_PORT_NUM, DL_HEADER, strlen(DL_HEADER));
+  xTaskCreate(rx_task, "uart_rx_task", 8192, NULL, 5, NULL);
+  xTaskCreate(console_keyboard_task, "console_keyboard_task", 2048, NULL, 5,
+              NULL);
+
+  vTaskDelay(pdMS_TO_TICKS(50));
+  uart_write_bytes(UART_PORT_NUM, DL_HEADER2, strlen(DL_HEADER2));
 
   vTaskDelete(NULL);
 }
