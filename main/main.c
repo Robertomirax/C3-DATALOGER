@@ -1,6 +1,6 @@
 #include "driver/uart.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
+#include "freertos/FreeRTOS.h" // IWYU pragma: keep
 #include "freertos/task.h"
 #include "hardware.h"
 #include <stdio.h>
@@ -14,7 +14,7 @@ static const char *log_path = "/archivos/log_uart.txt";
 static const char DL_HEADER2[] = "\r\n\r\nAlert Technologies\r\nDATALOGGER "
                                  "VER1.04\r\n\nMemory Used...08%\r\n";
 
-bool esperando_confirmacion = false; // Se remueve extern duplicado local
+bool esperando_confirmacion = false;
 
 typedef enum {
   WAIT_CRLF_1,
@@ -148,17 +148,10 @@ static void procesar_loop_secuencia(uint8_t *buf, size_t len, FILE *f) {
 
       subestado_loop = WAIT_CRLF_1;
 
-      // incrementar el contador de línea y ver si es múltiplo de 256 para
-      // agregar la línea indicativa
       linea++;
-      if (linea % 4 == 0) {
-        // agregar una línea indicativa
+      if ((linea) % 256 == 0) {
         char buffer[32];
-
-        // %05d aplica relleno con ceros hasta completar 5 dígitos
-        snprintf(buffer, sizeof(buffer), "\r\nSeq#..%05d", linea);
-
-        // Escribir el resultado en el archivo
+        snprintf(buffer, sizeof(buffer), "\r\nSeq#..%05d", (linea));
         fwrite(buffer, sizeof(char), strlen(buffer), f);
         fflush(f);
         ESP_LOGI(TAG, "Se agregó la línea: %s", buffer);
@@ -212,7 +205,7 @@ void console_keyboard_task(void *arg) {
 }
 
 static void tx_file_task(void *arg) {
-  vTaskDelay(pdMS_TO_TICKS(10000)); // Espera de 10 s no bloqueante para RX
+  vTaskDelay(pdMS_TO_TICKS(10000));
 
   esp_err_t err = uart_set_baudrate(UART_PORT_NUM, 4800);
   if (err == ESP_OK) {
@@ -248,7 +241,7 @@ static void rx_task(void *arg) {
   }
 
   bool inicio_transmision = true;
-  int estado_grabado = 0;
+  uint8_t estado_grabado = 0;
 
   const char *target =
       "seq #\",\"ld cella\",\"     dac\",\"    temp\",\"    tare\"";
@@ -262,7 +255,7 @@ static void rx_task(void *arg) {
         uart_read_bytes(UART_PORT_NUM, data, UART_BUF_SIZE, pdMS_TO_TICKS(100));
 
     if (rxBytes > 0) {
-      data[rxBytes] = '\0';
+      ESP_LOG_BUFFER_HEXDUMP(TAG, data, rxBytes, ESP_LOG_WARN);
 
       memcpy(stream_buf + overlap_len, data, rxBytes);
       size_t total_stream_len = overlap_len + rxBytes;
@@ -270,17 +263,20 @@ static void rx_task(void *arg) {
 
       uint16_t valor = (data[0] << 4) | data[1];
 
+      // 1. Respuesta al cabezal inicial (SIN desechar data ni hacer continue)
       if (valor > 0x0F && inicio_transmision) {
         uart_write_bytes(UART_PORT_NUM, DL_HEADER2, strlen(DL_HEADER2));
         inicio_transmision = false;
         overlap_len = 0;
-        continue;
       }
 
+      // 2. Control de comandos especiales de UART
       if (esperando_confirmacion) {
         char resp = data[0];
         if (resp == 'y' || resp == 'Y') {
           uart_write_bytes(UART_PORT_NUM, "Self Diag ...Waiting\r\n", 22);
+          ESP_LOGW(TAG, "Borrando");
+
           FILE *f = fopen(log_path, "w");
           if (f != NULL) {
             fclose(f);
@@ -300,41 +296,58 @@ static void rx_task(void *arg) {
         esperando_confirmacion = true;
         const char *prompt = "Will clear data\r\nAre you sure? y/n  \r\n";
         uart_write_bytes(UART_PORT_NUM, prompt, strlen(prompt));
-      } else {
-        FILE *f = fopen(log_path, "a+");
-        if (f != NULL) {
-          if (estado_grabado == 0) {
-            char *match = (char *)memmem(stream_buf, total_stream_len, target,
-                                         target_len);
-
-            if (match != NULL) {
-              size_t stream_match_idx = match - stream_buf;
-              size_t data_match_end_idx =
-                  (stream_match_idx >= overlap_len)
-                      ? (stream_match_idx - overlap_len + target_len)
-                      : (target_len - (overlap_len - stream_match_idx));
-
-              fwrite(data, 1, data_match_end_idx, f);
-
-              estado_grabado = 2;
-              subestado_loop = WAIT_CRLF_1;
-              last_byte = 0x00;
-
-              size_t bytes_restantes = rxBytes - data_match_end_idx;
-              if (bytes_restantes > 0) {
-                procesar_loop_secuencia(data + data_match_end_idx,
-                                        bytes_restantes, f);
-              }
-            } else {
-              fwrite(data, 1, rxBytes, f);
-            }
-          } else if (estado_grabado == 2) {
-            procesar_loop_secuencia(data, rxBytes, f);
-          }
-          fclose(f);
-        }
       }
 
+      // 3. GARANTÍA DE GRABACIÓN: Todos los datos entran al archivo de log
+      FILE *f = fopen(log_path, "a+");
+      if (f != NULL) {
+        if (estado_grabado == 0) {
+          char *match = (char *)memmem(stream_buf, total_stream_len, target,
+                                       target_len);
+
+          if (match != NULL) {
+            size_t stream_match_idx = match - stream_buf;
+            size_t data_match_end_idx =
+                (stream_match_idx >= overlap_len)
+                    ? (stream_match_idx - overlap_len + target_len)
+                    : (target_len - (overlap_len - stream_match_idx));
+
+            fwrite(data, 1, data_match_end_idx, f);
+
+            estado_grabado = 2;
+            subestado_loop = WAIT_CRLF_1;
+            last_byte = 0x00;
+
+            size_t bytes_restantes = rxBytes - data_match_end_idx;
+            if (bytes_restantes > 0) {
+              procesar_loop_secuencia(data + data_match_end_idx,
+                                      bytes_restantes, f);
+            }
+          } else {
+            // Escribe la ráfaga completa en el archivo
+            fwrite(data, 1, rxBytes, f);
+
+            // Copia no destructiva solo para visualización en log
+            char *temp_data = (char *)malloc(rxBytes + 1);
+            if (temp_data != NULL) {
+              memcpy(temp_data, data, rxBytes);
+              temp_data[rxBytes] = '\0';
+
+              char *line = strtok(temp_data, "\r\n");
+              while (line != NULL) {
+                ESP_LOGI(TAG, "%s", line);
+                line = strtok(NULL, "\r\n");
+              }
+              free(temp_data);
+            }
+          }
+        } else if (estado_grabado == 2) {
+          procesar_loop_secuencia(data, rxBytes, f);
+        }
+        fclose(f);
+      }
+
+      // 4. Mantenimiento del solapamiento del búfer
       if (total_stream_len >= (target_len - 1)) {
         overlap_len = target_len - 1;
         memcpy(stream_buf, stream_buf + total_stream_len - overlap_len,
