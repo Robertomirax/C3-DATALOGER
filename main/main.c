@@ -1,8 +1,6 @@
-//---------------------- main.c ------------------
-
 #include "driver/uart.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h" // IWYU pragma: keep
+#include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hardware.h"
 #include <stdio.h>
@@ -16,7 +14,7 @@ static const char *log_path = "/archivos/log_uart.txt";
 static const char DL_HEADER2[] = "\r\n\r\nAlert Technologies\r\nDATALOGGER "
                                  "VER1.04\r\n\nMemory Used...08%\r\n";
 
-extern bool esperando_confirmacion;
+bool esperando_confirmacion = false; // Se remueve extern duplicado local
 
 typedef enum {
   WAIT_CRLF_1,
@@ -37,12 +35,12 @@ static uint8_t last_byte = 0x00;
 // ---------------------------------------------------------------------------
 static char line_buf[128];
 static size_t line_idx = 0;
-static size_t pos_flag_tara =
-    0; // Índice en line_buf donde reside el flag de tara ('0' inicial)
+static size_t pos_flag_tara = 0;
 
 static void reset_line_buffer(void) {
   line_idx = 0;
   pos_flag_tara = 0;
+  memset(line_buf, 0, sizeof(line_buf));
 }
 
 static void append_char_to_line(char c) {
@@ -68,33 +66,25 @@ static void procesar_loop_secuencia(uint8_t *buf, size_t len, FILE *f) {
 
     switch (subestado_loop) {
 
-    // 1. Espera el primer 0x0D 0x0A
     case WAIT_CRLF_1:
       if (last_byte == 0x0D && b == 0x0A) {
-        ESP_LOGI(TAG,
-                 "Primer CRLF detectado. Inicializando registro en RAM...");
+        ESP_LOGI(TAG, "CRLF detectado. Parseando trama en RAM...");
         reset_line_buffer();
-
         append_str_to_line("\r\n");
-        pos_flag_tara = line_idx; // Almacenamos dónde se ubica el '0' inicial
+        pos_flag_tara = line_idx;
         append_str_to_line("0 ");
-
         subestado_loop = WAIT_COMMA_1;
       }
       break;
 
-    // 2. Espera la 1ª coma ','
     case WAIT_COMMA_1:
       if (b == ',') {
-        ESP_LOGI(TAG, "1ª coma detectada. Omitiendo ceros iniciales...");
         subestado_loop = TRIM_ZEROS_2;
       }
       break;
 
-    // 2.1 Descarta '0' y espacios iniciales de la 1ª captura
     case TRIM_ZEROS_2:
       if (b == ',') {
-        ESP_LOGI(TAG, "2ª coma detectada. Agregando espacio...");
         append_char_to_line(' ');
         subestado_loop = IGNORE_TO_COMMA_3;
       } else if (b != '0' && b != ' ') {
@@ -103,10 +93,8 @@ static void procesar_loop_secuencia(uint8_t *buf, size_t len, FILE *f) {
       }
       break;
 
-    // 3. Graba todo hasta encontrar la 2ª coma ','
     case CAPTURE_TO_COMMA_2:
       if (b == ',') {
-        ESP_LOGI(TAG, "2ª coma detectada. Agregando espacio...");
         append_char_to_line(' ');
         subestado_loop = IGNORE_TO_COMMA_3;
       } else {
@@ -114,20 +102,14 @@ static void procesar_loop_secuencia(uint8_t *buf, size_t len, FILE *f) {
       }
       break;
 
-    // 4. Obvia todo lo recibido entre la 2ª y la 3ª coma
     case IGNORE_TO_COMMA_3:
       if (b == ',') {
-        ESP_LOGI(
-            TAG,
-            "3ª coma detectada. Omitiendo ceros iniciales de 2ª captura...");
         subestado_loop = TRIM_ZEROS_4;
       }
       break;
 
-    // 4.1 Descarta '0' y espacios iniciales de la 2ª captura
     case TRIM_ZEROS_4:
       if (b == ',') {
-        ESP_LOGI(TAG, "4ª coma detectada.");
         subestado_loop = WAIT_TARE;
       } else if (b != '0' && b != ' ') {
         append_char_to_line((char)b);
@@ -135,40 +117,34 @@ static void procesar_loop_secuencia(uint8_t *buf, size_t len, FILE *f) {
       }
       break;
 
-    // 5. Graba todo hasta encontrar la 4ª coma ','
     case CAPTURE_TO_COMMA_4:
       if (b == ',') {
-        ESP_LOGI(TAG, "4ª coma detectada. Pasando a evaluación de TARA...");
         subestado_loop = WAIT_TARE;
       } else {
         append_char_to_line((char)b);
       }
       break;
 
-    // 5.1 Evalúa el byte de Tara, actualiza RAM y escribe en Flash
     case WAIT_TARE:
-      ESP_LOGW(TAG, "Tara recibida = 0x%02X", b);
-      if (b != '0' && b != '1')
-      {
-        break;
-      }      
 
-      if (b == '1' || b == 0x31) {
-        // Modificación limpia directamente en el buffer de RAM
+      if (b != '0' && b != '1') {
+        break;
+      }
+
+      ESP_LOGI(TAG, "Byte Tare: 0x%02X", b);
+      if (b == '1') {
         if (pos_flag_tara < line_idx) {
           line_buf[pos_flag_tara] = '1';
         }
-        ESP_LOGW(TAG, "Flag de Tara actualizado a '1' en RAM");
       }
 
-      // Escritura atómica a disco de la línea final
-      if (line_idx > 0) {
+      // Escritura atómica al disco al completar la secuencia
+      if (line_idx > 0 && f != NULL) {
         fwrite(line_buf, 1, line_idx, f);
         fflush(f);
-        ESP_LOGI(TAG, "Línea guardada exitosamente en Flash: %s", line_buf);
+        ESP_LOGI(TAG, "Guardado en Flash: %s", line_buf);
       }
 
-      // Reinicia máquina de estados para la siguiente trama
       subestado_loop = WAIT_CRLF_1;
       break;
     }
@@ -178,44 +154,39 @@ static void procesar_loop_secuencia(uint8_t *buf, size_t len, FILE *f) {
 }
 
 // ---------------------------------------------------------------------------
-// Tareas independientes
+// Tareas
 // ---------------------------------------------------------------------------
 void console_keyboard_task(void *arg) {
-  ESP_LOGI(TAG_KB, "Monitoreo de teclado iniciado. Presiona 'B' para borrar.");
+  ESP_LOGI(TAG_KB, "Monitoreo de teclado iniciado.");
 
   while (1) {
     int c = getchar();
 
-    if (c != EOF) {
-      if (c == 'b' || c == 'B') {
-        printf("\r\n[ALERTA] Solicitud de borrado detectada.\r\n");
-        printf("Will clear data\r\nAre you sure? y/n \r\n");
-        fflush(stdout);
+    if (c == 'b' || c == 'B') {
+      printf("\r\n[ALERTA] Solicitud de borrado.\r\nWill clear data\r\nAre you "
+             "sure? y/n \r\n");
+      fflush(stdout);
 
-        bool esperando = true;
-        while (esperando) {
-          int resp = getchar();
-          if (resp != EOF && resp != '\r' && resp != '\n') {
-            if (resp == 'y' || resp == 'Y') {
-              printf("\r\nSelf Diag ...Waiting\r\n");
-
-              FILE *f = fopen(log_path, "w");
-              if (f != NULL) {
-                fclose(f);
-                ESP_LOGI(TAG_KB, "Archivo borrado exitosamente.");
-                printf("RAM test successful\r\n\r\nDone\r\n");
-              } else {
-                ESP_LOGE(TAG_KB, "RAM test failed.");
-                printf("\r\n[ERROR] Fallo al borrar el archivo.\r\n");
-              }
+      bool esperando = true;
+      while (esperando) {
+        int resp = getchar();
+        if (resp != EOF && resp != '\r' && resp != '\n') {
+          if (resp == 'y' || resp == 'Y') {
+            printf("\r\nSelf Diag ...Waiting\r\n");
+            FILE *f = fopen(log_path, "w");
+            if (f != NULL) {
+              fclose(f);
+              ESP_LOGI(TAG_KB, "Archivo borrado.");
+              printf("RAM test successful\r\n\r\nDone\r\n");
             } else {
-              ESP_LOGI(TAG_KB, "Borrado cancelado por el usuario.");
-              printf("\r\n[INFO] Operacion cancelada.\r\n");
+              ESP_LOGE(TAG_KB, "Fallo al borrar.");
             }
-            esperando = false;
+          } else {
+            ESP_LOGI(TAG_KB, "Operacion cancelada.");
           }
-          vTaskDelay(pdMS_TO_TICKS(20));
+          esperando = false;
         }
+        vTaskDelay(pdMS_TO_TICKS(20));
       }
     }
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -223,56 +194,42 @@ void console_keyboard_task(void *arg) {
 }
 
 static void tx_file_task(void *arg) {
-  const char *file_path = "/archivos/log_uart.txt";
+  vTaskDelay(pdMS_TO_TICKS(10000)); // Espera de 10 s no bloqueante para RX
 
-  FILE *f = fopen(file_path, "r");
+  esp_err_t err = uart_set_baudrate(UART_PORT_NUM, 4800);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Baudrate cambiado a 4800");
+  }
+
+  FILE *f = fopen(log_path, "r");
   if (f == NULL) {
-    ESP_LOGE(TAG, "Error al abrir el archivo para lectura: %s", file_path);
+    ESP_LOGE(TAG, "Error abriendo archivo log");
     vTaskDelete(NULL);
     return;
   }
 
   uint8_t *tx_buffer = (uint8_t *)malloc(UART_BUF_SIZE);
-  if (tx_buffer == NULL) {
-    ESP_LOGE(TAG, "Error asignando RAM para TX buffer");
-    fclose(f);
-    vTaskDelete(NULL);
-    return;
-  }
-
-  ESP_LOGI(TAG, "Transmitiendo archivo...");
-
-  size_t bytes_read = 0;
-  size_t total_sent = 0;
-
-  while ((bytes_read = fread(tx_buffer, 1, UART_BUF_SIZE, f)) > 0) {
-    int bytes_sent =
-        uart_write_bytes(UART_PORT_NUM, (const char *)tx_buffer, bytes_read);
-    if (bytes_sent > 0) {
-      total_sent += bytes_sent;
+  if (tx_buffer != NULL) {
+    size_t bytes_read = 0;
+    while ((bytes_read = fread(tx_buffer, 1, UART_BUF_SIZE, f)) > 0) {
+      uart_write_bytes(UART_PORT_NUM, (const char *)tx_buffer, bytes_read);
+      uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(100));
     }
-    uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(100));
+    free(tx_buffer);
   }
 
-  ESP_LOGI(TAG, "Transmisión finalizada. %zu bytes enviados", total_sent);
-
-  free(tx_buffer);
   fclose(f);
   vTaskDelete(NULL);
 }
 
 static void rx_task(void *arg) {
   uint8_t *data = (uint8_t *)malloc(UART_BUF_SIZE + 1);
-
   if (data == NULL) {
-    ESP_LOGE(TAG, "Error asignando memoria RAM para RX");
     vTaskDelete(NULL);
     return;
   }
 
-  bool esperando_confirmacion = false;
   bool inicio_transmision = true;
-
   int estado_grabado = 0;
 
   const char *target =
@@ -289,10 +246,6 @@ static void rx_task(void *arg) {
     if (rxBytes > 0) {
       data[rxBytes] = '\0';
 
-      ESP_LOGI(TAG, "Recibido (%d bytes): %.*s", rxBytes, rxBytes,
-               (char *)data);
-      ESP_LOG_BUFFER_HEXDUMP(TAG, data, rxBytes, ESP_LOG_INFO);
-
       memcpy(stream_buf + overlap_len, data, rxBytes);
       size_t total_stream_len = overlap_len + rxBytes;
       stream_buf[total_stream_len] = '\0';
@@ -300,7 +253,6 @@ static void rx_task(void *arg) {
       uint16_t valor = (data[0] << 4) | data[1];
 
       if (valor > 0x0F && inicio_transmision) {
-        ESP_LOGI(TAG, "Valor binario mayor a 0x0F recibido: 0x%02X", valor);
         uart_write_bytes(UART_PORT_NUM, DL_HEADER2, strlen(DL_HEADER2));
         inicio_transmision = false;
         overlap_len = 0;
@@ -310,76 +262,34 @@ static void rx_task(void *arg) {
       if (esperando_confirmacion) {
         char resp = data[0];
         if (resp == 'y' || resp == 'Y') {
-          const char *msg1 = "Self Diag ...Waiting\r\n";
-          uart_write_bytes(UART_PORT_NUM, msg1, strlen(msg1));
-
+          uart_write_bytes(UART_PORT_NUM, "Self Diag ...Waiting\r\n", 22);
           FILE *f = fopen(log_path, "w");
           if (f != NULL) {
             fclose(f);
-            ESP_LOGI(TAG, "Archivo borrado exitosamente.");
-            const char *msg = "RAM test successful\r\n\r\nDone\r\n";
-            uart_write_bytes(UART_PORT_NUM, msg, strlen(msg));
-          } else {
-            ESP_LOGE(TAG, "RAM test failed \r\n\r\nDone\r\n");
-            const char *msg = "\r\n[ERROR] Fallo al borrar el archivo.\r\n";
-            uart_write_bytes(UART_PORT_NUM, msg, strlen(msg));
+            uart_write_bytes(UART_PORT_NUM,
+                             "RAM test successful\r\n\r\nDone\r\n", 29);
           }
-        } else {
-          ESP_LOGI(TAG, "Borrado cancelado por el usuario.");
-          const char *msg = "\r\n[INFO] Operacion cancelada.\r\n";
-          uart_write_bytes(UART_PORT_NUM, msg, strlen(msg));
         }
         esperando_confirmacion = false;
-      }
-
-      else if (strstr(stream_buf, "send") != NULL) {
-        ESP_LOGI(TAG, "Comando 'send' recibido!");
-
+      } else if (strstr(stream_buf, "send") != NULL) {
         const char *cambio = "ChangeBaud->4800 in 10Sec\r\n";
         uart_write_bytes(UART_PORT_NUM, cambio, strlen(cambio));
-        uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(500));
-
-        ESP_LOGI(TAG, "Iniciando espera de 10 segundos...");
-        vTaskDelay(pdMS_TO_TICKS(10000));
-
-        esp_err_t err = uart_set_baudrate(UART_PORT_NUM, 4800);
-        if (err == ESP_OK) {
-          ESP_LOGI(TAG, "Baudrate cambiado exitosamente a 4800");
-        } else {
-          ESP_LOGE(TAG, "Error al cambiar el baudrate: %s",
-                   esp_err_to_name(err));
-        }
 
         if (xTaskGetHandle("tx_file_task") == NULL) {
           xTaskCreate(tx_file_task, "tx_file_task", 4096, NULL, 5, NULL);
-        } else {
-          ESP_LOGW(TAG, "Transferencia previa aun en progreso.");
         }
-      }
-
-      else if (strstr(stream_buf, "mtest") != NULL) {
-        ESP_LOGW(TAG,
-                 "Solicitud de borrado recibida. Pidiendo confirmacion...");
+      } else if (strstr(stream_buf, "mtest") != NULL) {
         esperando_confirmacion = true;
-
         const char *prompt = "Will clear data\r\nAre you sure? y/n  \r\n";
         uart_write_bytes(UART_PORT_NUM, prompt, strlen(prompt));
-      }
-
-      else {
-        // Apertura estándar con "a+" (append puro sin seek relativo)
+      } else {
         FILE *f = fopen(log_path, "a+");
-
-        if (f == NULL) {
-          ESP_LOGE(TAG, "Error al abrir el archivo log_uart.txt");
-        } else {
+        if (f != NULL) {
           if (estado_grabado == 0) {
             char *match = (char *)memmem(stream_buf, total_stream_len, target,
                                          target_len);
 
             if (match != NULL) {
-              ESP_LOGI(TAG, "Frase objetivo detectada. Entrando al bucle...");
-
               size_t stream_match_idx = match - stream_buf;
               size_t data_match_end_idx =
                   (stream_match_idx >= overlap_len)
@@ -403,7 +313,6 @@ static void rx_task(void *arg) {
           } else if (estado_grabado == 2) {
             procesar_loop_secuencia(data, rxBytes, f);
           }
-
           fclose(f);
         }
       }
