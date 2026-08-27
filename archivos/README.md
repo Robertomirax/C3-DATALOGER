@@ -1,0 +1,1 @@
+acá va el archivo con los datos obtenidos de la celda de carga
