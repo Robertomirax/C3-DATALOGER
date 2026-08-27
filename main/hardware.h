@@ -9,8 +9,8 @@ extern "C" {
 
 // --- CONFIGURACIÓN UART / MAX3232 ---
 #define UART_PORT_NUM UART_NUM_1
-#define UART_TX_PIN GPIO_NUM_21
-#define UART_RX_PIN GPIO_NUM_20
+#define UART_TX_PIN GPIO_NUM_5
+#define UART_RX_PIN GPIO_NUM_4
 #define UART_BUF_SIZE 1024
 #define BAUD_RATE 300
 

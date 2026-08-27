@@ -1,23 +1,24 @@
 {
-    "configurations": [
-        {
-            "name": "ESP-IDF",
-            "includePath": [
-                "${workspaceFolder}/**",
-                "${workspaceFolder}/managed_components/**",
-                "${workspaceFolder}/build/config"
-            ],
-            "browse": {
-                "path": [
-                    "${workspaceFolder}/**",
-                    "${workspaceFolder}/managed_components/**"
-                ],
-                "limitSymbolsToIncludedHeaders": false
-            },
-            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
-            "cStandard": "c11",
-            "cppStandard": "c++17"
-        }
-    ],
-    "version": 4
+  "configurations": [
+    {
+      "name": "ESP-IDF",
+      "includePath": [
+        "${workspaceFolder}/**",
+        "${workspaceFolder}/managed_components/**",
+        "${workspaceFolder}/build/config"
+      ],
+      "browse": {
+        "path": [
+          "${workspaceFolder}/**",
+          "${workspaceFolder}/managed_components/**"
+        ],
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+      "cStandard": "c11",
+      "cppStandard": "c++17",
+      "compilerPath": "C:\\Espressif\\tools\\riscv32-esp-elf\\esp-15.2.0_20251204\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe"
+    }
+  ],
+  "version": 4
 }
