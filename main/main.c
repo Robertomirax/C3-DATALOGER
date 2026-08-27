@@ -204,166 +204,182 @@ void console_keyboard_task(void *arg) {
   }
 }
 
+static bool transmitiendo_archivo = false;
+
 static void tx_file_task(void *arg) {
-  vTaskDelay(pdMS_TO_TICKS(10000));
+    transmitiendo_archivo = true; // Bloquea la grabación en rx_task
 
-  esp_err_t err = uart_set_baudrate(UART_PORT_NUM, 4800);
-  if (err == ESP_OK) {
-    ESP_LOGI(TAG, "Baudrate cambiado a 4800");
-  }
+    vTaskDelay(pdMS_TO_TICKS(10000));
 
-  FILE *f = fopen(log_path, "r");
-  if (f == NULL) {
-    ESP_LOGE(TAG, "Error abriendo archivo log");
-    vTaskDelete(NULL);
-    return;
-  }
-
-  uint8_t *tx_buffer = (uint8_t *)malloc(UART_BUF_SIZE);
-  if (tx_buffer != NULL) {
-    size_t bytes_read = 0;
-    while ((bytes_read = fread(tx_buffer, 1, UART_BUF_SIZE, f)) > 0) {
-      uart_write_bytes(UART_PORT_NUM, (const char *)tx_buffer, bytes_read);
-      uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(100));
-
-      const char *msg = "\r\n\r\nChangeBaud->300\r\n\r\n";
-      uart_write_bytes(UART_PORT_NUM, msg, strlen(msg));
+    // Cambiar a 4800 para transmisión rápida
+    if (uart_set_baudrate(UART_PORT_NUM, 4800) == ESP_OK) {
+        ESP_LOGI(TAG, "Baudrate cambiado a 4800");
     }
-    free(tx_buffer);
-  }
 
-  fclose(f);
-  vTaskDelete(NULL);
+    FILE *f = fopen(log_path, "r");
+    if (f != NULL) {
+        uint8_t *tx_buffer = (uint8_t *)malloc(UART_BUF_SIZE);
+        if (tx_buffer != NULL) {
+            size_t bytes_read = 0;
+            while ((bytes_read = fread(tx_buffer, 1, UART_BUF_SIZE, f)) > 0) {
+                uart_write_bytes(UART_PORT_NUM, (const char *)tx_buffer, bytes_read);
+                uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(1000));
+            }
+            free(tx_buffer);
+        }
+        fclose(f);
+    } else {
+        ESP_LOGE(TAG, "Error abriendo archivo log para lectura");
+    }
+
+    // Notificar fin de transmisión (fuera del bucle)
+    const char *msg = "\r\n\r\nChangeBaud->300\r\n\r\n";
+    uart_write_bytes(UART_PORT_NUM, msg, strlen(msg));
+    uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(500));
+
+    // Restaurar velocidad original de recepción
+    uart_set_baudrate(UART_PORT_NUM, 300);
+
+    transmitiendo_archivo = false; // Restablece rx_task
+    vTaskDelete(NULL);
 }
 
+
+
 static void rx_task(void *arg) {
-  uint8_t *data = (uint8_t *)malloc(UART_BUF_SIZE + 1);
-  if (data == NULL) {
-    vTaskDelete(NULL);
-    return;
-  }
-
-  // bool inicio_transmision = true;
-  uint8_t estado_grabado = 0;
-
-  const char *target =
-      "seq #\",\"ld cella\",\"     dac\",\"    temp\",\"    tare\"";
-  size_t target_len = strlen(target);
-
-  char stream_buf[UART_BUF_SIZE + 32];
-  size_t overlap_len = 0;
-
-  while (1) {
-    int rxBytes =
-        uart_read_bytes(UART_PORT_NUM, data, UART_BUF_SIZE, pdMS_TO_TICKS(100));
-
-    if (rxBytes > 0) {
-      ESP_LOG_BUFFER_HEXDUMP(TAG, data, rxBytes, ESP_LOG_WARN);
-
-      bool ignorar_grabacion = false;
-
-      memcpy(stream_buf + overlap_len, data, rxBytes);
-      size_t total_stream_len = overlap_len + rxBytes;
-      stream_buf[total_stream_len] = '\0';
-
-      // Control de comandos especiales de UART
-      // Si está esperando la confirmación del borrado verifica si llegó "y"
-      if (esperando_confirmacion) {
-        char resp = data[0];
-        if (resp == 'y' || resp == 'Y') {
-          uart_write_bytes(UART_PORT_NUM, "Self Diag ...Waiting\r\n", 22);
-          ESP_LOGW(TAG, "Borrando");
-
-          FILE *f = fopen(log_path, "w");
-          if (f != NULL) {
-            fclose(f);
-            uart_write_bytes(UART_PORT_NUM,
-                             "RAM test successful\r\n\r\nDone\r\n", 29);
-          }
-        }
-        esperando_confirmacion = false;
-        ignorar_grabacion = true;
-      } else if (strstr(stream_buf, "send") != NULL) {
-        const char *cambio = "ChangeBaud->4800 in 10Sec\r\n";
-        uart_write_bytes(UART_PORT_NUM, cambio, strlen(cambio));
-
-        if (xTaskGetHandle("tx_file_task") == NULL) {
-          xTaskCreate(tx_file_task, "tx_file_task", 4096, NULL, 5, NULL);
-        }
-        ignorar_grabacion = true;
-      } else if (strstr(stream_buf, "mtest") != NULL) {
-        esperando_confirmacion = true;
-        const char *prompt = "Will clear data\r\nAre you sure? y/n  \r\n";
-        uart_write_bytes(UART_PORT_NUM, prompt, strlen(prompt));
-       // ignorar_grabacion = true;
-      }
-
-      // Todos los datos que no sean comandos entran al archivo de log
-      if (!ignorar_grabacion) {
-
-        FILE *f = fopen(log_path, "a+");
-        if (f != NULL) {
-          if (estado_grabado == 0) {
-            char *match = (char *)memmem(stream_buf, total_stream_len, target,
-                                         target_len);
-
-            if (match != NULL) {
-              size_t stream_match_idx = match - stream_buf;
-              size_t data_match_end_idx =
-                  (stream_match_idx >= overlap_len)
-                      ? (stream_match_idx - overlap_len + target_len)
-                      : (target_len - (overlap_len - stream_match_idx));
-              if (!ignorar_grabacion) {
-                fwrite(data, 1, data_match_end_idx, f);
-              }
-              estado_grabado = 2;
-              subestado_loop = WAIT_CRLF_1;
-              last_byte = 0x00;
-
-              size_t bytes_restantes = rxBytes - data_match_end_idx;
-              if (bytes_restantes > 0) {
-                procesar_loop_secuencia(data + data_match_end_idx,
-                                        bytes_restantes, f);
-              }
-            } else {
-              // Escribe la ráfaga completa en el archivo
-              if (!ignorar_grabacion) {
-                fwrite(data, 1, rxBytes, f);
-              }
-              // Copia no destructiva solo para visualización en log
-              char *temp_data = (char *)malloc(rxBytes + 1);
-              if (temp_data != NULL) {
-                memcpy(temp_data, data, rxBytes);
-                temp_data[rxBytes] = '\0';
-
-                char *line = strtok(temp_data, "\r\n");
-                while (line != NULL) {
-                  ESP_LOGI(TAG, "%s", line);
-                  line = strtok(NULL, "\r\n");
-                }
-                free(temp_data);
-              }
-            }
-          } else if (estado_grabado == 2) {
-            procesar_loop_secuencia(data, rxBytes, f);
-          }
-          fclose(f);
-        }
-      }
-
-      // 4. Mantenimiento del solapamiento del búfer
-      if (total_stream_len >= (target_len - 1)) {
-        overlap_len = target_len - 1;
-        memcpy(stream_buf, stream_buf + total_stream_len - overlap_len,
-               overlap_len);
-      } else {
-        overlap_len = total_stream_len;
-      }
+    uint8_t *data = (uint8_t *)malloc(UART_BUF_SIZE);
+    if (data == NULL) {
+        vTaskDelete(NULL);
+        return;
     }
-  }
 
-  free(data);
-  vTaskDelete(NULL);
+    uint8_t estado_grabado = 0;
+    const char *target = "seq #\",\"ld cella\",\"     dac\",\"    temp\",\"    tare\"";
+    size_t target_len = strlen(target);
+
+    char overlap_buf[64] = {0};
+    size_t overlap_len = 0;
+
+    while (1) {
+        int rxBytes = uart_read_bytes(UART_PORT_NUM, data, UART_BUF_SIZE, pdMS_TO_TICKS(100));
+
+        if (rxBytes > 0) {
+            ESP_LOG_BUFFER_HEXDUMP(TAG, data, rxBytes, ESP_LOG_WARN);
+
+            bool ignorar_grabacion = false;
+
+            size_t total_stream_len = overlap_len + rxBytes;
+            char *stream_buf = (char *)malloc(total_stream_len + 1);
+
+            if (stream_buf != NULL) {
+                memcpy(stream_buf, overlap_buf, overlap_len);
+                memcpy(stream_buf + overlap_len, data, rxBytes);
+                stream_buf[total_stream_len] = '\0';
+
+                // 1. Manejo de Comandos
+                if (esperando_confirmacion) {
+                    char resp = data[0];
+                    if (resp == 'y' || resp == 'Y') {
+                        uart_write_bytes(UART_PORT_NUM, "Self Diag ...Waiting\r\n", 22);
+                        ESP_LOGW(TAG, "Borrando");
+
+                        FILE *f_clr = fopen(log_path, "w");
+                        if (f_clr != NULL) {
+                            fclose(f_clr);
+                            uart_write_bytes(UART_PORT_NUM, "RAM test successful\r\n\r\nDone\r\n", 29);
+                        }
+                    }
+                    esperando_confirmacion = false;
+                    ignorar_grabacion = true;
+
+                    // Limpieza preventiva
+                    overlap_len = 0;
+                    memset(overlap_buf, 0, sizeof(overlap_buf));
+
+                } else if (strstr(stream_buf, "send") != NULL) {
+                    const char *cambio = "ChangeBaud->4800 in 10Sec\r\n";
+                    uart_write_bytes(UART_PORT_NUM, cambio, strlen(cambio));
+
+                    if (xTaskGetHandle("tx_file_task") == NULL) {
+                        xTaskCreate(tx_file_task, "tx_file_task", 4096, NULL, 5, NULL);
+                    }
+
+                    ignorar_grabacion = true;
+
+                    // FIX: Limpiar solapamiento para evitar re-disparos de "send"
+                    overlap_len = 0;
+                    memset(overlap_buf, 0, sizeof(overlap_buf));
+
+                } else if (strstr(stream_buf, "mtest") != NULL) {
+                    esperando_confirmacion = true;
+                    const char *prompt = "Will clear data\r\nAre you sure? y/n  \r\n";
+                    uart_write_bytes(UART_PORT_NUM, prompt, strlen(prompt));
+                    ignorar_grabacion = true;
+
+                    // FIX: Limpiar solapamiento para evitar re-disparos de "mtest"
+                    overlap_len = 0;
+                    memset(overlap_buf, 0, sizeof(overlap_buf));
+                }
+
+                // 2. Escritura en el Log (solo si no se está transmitiendo el archivo)
+                if (!ignorar_grabacion && !transmitiendo_archivo) {
+                    FILE *f = fopen(log_path, "a+");
+                    if (f != NULL) {
+                        if (estado_grabado == 0) {
+                            char *match = (char *)memmem(stream_buf, total_stream_len, target, target_len);
+
+                            if (match != NULL) {
+                                size_t stream_match_idx = match - stream_buf;
+                                size_t data_match_end_idx = (stream_match_idx >= overlap_len)
+                                    ? (stream_match_idx - overlap_len + target_len)
+                                    : (target_len - (overlap_len - stream_match_idx));
+
+                                fwrite(data, 1, data_match_end_idx, f);
+                                estado_grabado = 2;
+                                subestado_loop = WAIT_CRLF_1;
+                                last_byte = 0x00;
+
+                                size_t bytes_restantes = rxBytes - data_match_end_idx;
+                                if (bytes_restantes > 0) {
+                                    procesar_loop_secuencia(data + data_match_end_idx, bytes_restantes, f);
+                                }
+                            } else {
+                                fwrite(data, 1, rxBytes, f);
+                            }
+                        } else if (estado_grabado == 2) {
+                            procesar_loop_secuencia(data, rxBytes, f);
+                        }
+
+                        fclose(f);
+                    } else {
+                        ESP_LOGE(TAG, "Error abriendo log: %s", log_path);
+                    }
+                }
+
+                // 3. Mantenimiento del solapamiento
+                if (!ignorar_grabacion && !transmitiendo_archivo) {
+                    if (total_stream_len >= (target_len - 1)) {
+                        overlap_len = target_len - 1;
+                        if (overlap_len > sizeof(overlap_buf)) {
+                            overlap_len = sizeof(overlap_buf);
+                        }
+                        memcpy(overlap_buf, stream_buf + total_stream_len - overlap_len, overlap_len);
+                    } else {
+                        overlap_len = total_stream_len;
+                        if (overlap_len > sizeof(overlap_buf)) {
+                            overlap_len = sizeof(overlap_buf);
+                        }
+                        memcpy(overlap_buf, stream_buf, overlap_len);
+                    }
+                }
+
+                free(stream_buf);
+            }
+        }
+    }
+
+    free(data);
+    vTaskDelete(NULL);
 }
 
 void app_main(void) {
@@ -373,8 +389,7 @@ void app_main(void) {
   vTaskDelay(pdMS_TO_TICKS(100));
 
   xTaskCreate(rx_task, "uart_rx_task", 8192, NULL, 5, NULL);
-  xTaskCreate(console_keyboard_task, "console_keyboard_task", 2048, NULL, 5,
-              NULL);
+  xTaskCreate(console_keyboard_task, "console_keyboard_task", 2048, NULL, 5, NULL);
 
   vTaskDelay(pdMS_TO_TICKS(50));
   uart_write_bytes(UART_PORT_NUM, DL_HEADER2, strlen(DL_HEADER2));
