@@ -225,6 +225,9 @@ static void tx_file_task(void *arg) {
     while ((bytes_read = fread(tx_buffer, 1, UART_BUF_SIZE, f)) > 0) {
       uart_write_bytes(UART_PORT_NUM, (const char *)tx_buffer, bytes_read);
       uart_wait_tx_done(UART_PORT_NUM, pdMS_TO_TICKS(100));
+
+      const char *msg = "ChangeBaud->300\r\n\r\n";
+      uart_write_bytes(UART_PORT_NUM, msg, strlen(msg));
     }
     free(tx_buffer);
   }
@@ -302,8 +305,8 @@ static void rx_task(void *arg) {
       FILE *f = fopen(log_path, "a+");
       if (f != NULL) {
         if (estado_grabado == 0) {
-          char *match = (char *)memmem(stream_buf, total_stream_len, target,
-                                       target_len);
+          char *match =
+              (char *)memmem(stream_buf, total_stream_len, target, target_len);
 
           if (match != NULL) {
             size_t stream_match_idx = match - stream_buf;
