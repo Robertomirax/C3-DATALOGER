@@ -20,18 +20,18 @@
     }
   },
   "idf.openOcdConfigs": [
-    "board/esp32c5-builtin.cfg"
+    "board/esp32s3-builtin.cfg"
   ],
-  "idf.portWin": "COM12",
-  "idf.currentSetup": "C:\\esp\\v6.0.2\\esp-idf",
+  "idf.portWin": "COM15",
+  "idf.currentSetup": "C:\\esp\\v6.1\\esp-idf",
   "idf.customExtraVars": {
-    "IDF_TARGET": "esp32c5"
+    "IDF_TARGET": "esp32s3"
   },
   "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-20.1.1_20250829\\esp-clang\\bin\\clangd.exe",
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=c:\\DATALOGGER\\C3-DATALOGER\\build"
+    "--compile-commands-dir=c:\\DATALOGGER\\S3-DATALOGGER\\build"
   ],
   "idf.flashType": "UART"
 }

@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(C5-DATALOGER)
+project(S3-DATALOGGER)
 
 # Crear imagen SPIFFS desde carpeta "archivos"
-littlefs_create_partition_image(archivos archivos FLASH_IN_PROJECT)
+# littlefs_create_partition_image(archivos archivos FLASH_IN_PROJECT)
