@@ -3,18 +3,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-
 #include "freertos/FreeRTOS.h" // IWYU pragma: keep
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-
-
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "hardware.h"
-
-// #include "lv_conf_internal.h"
 #include "font/lv_font.h"
 
 // ---------------------------------------------------------------------------
